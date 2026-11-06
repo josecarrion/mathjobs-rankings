@@ -1,13 +1,13 @@
 # MathJobs Rankings
 
-Process faculty ratings from MathJobs to produce normalized candidate rankings using collaborative filtering.
+Rank faculty job candidates from MathJobs ratings, adjusting for raters who tend to rate high or low.
 
 ## What It Does
 
-1. **Loads faculty ratings** from MathJobs export files
-2. **Predicts missing ratings** using SVD++ collaborative filtering (faculty don't rate every candidate, so the algorithm predicts what they would have rated based on patterns)
-3. **Normalizes ratings** across faculty (adjusts for tough/easy graders), using each rater's actual ratings
-4. **Re-scores on resampled ratings** to give each candidate a score, the range covering the middle half of runs, and the chance of landing in the top 15
+1. **Loads faculty ratings** of PageUp applicants from the MathJobs export files
+2. **Adjusts for tough and easy raters**: each rater's tendency is estimated by comparing their ratings with other raters' ratings of the same candidates
+3. **Scores each candidate** by the average of their adjusted ratings, next to the plain mean rating that MathJobs shows
+4. **Marks the top 20 places**, which need at least 3 ratings
 
 ## Quick Start
 
@@ -15,93 +15,60 @@ Process faculty ratings from MathJobs to produce normalized candidate rankings u
 
 1. Export `ratings.csv` and `appl.csv` from MathJobs
 2. Run `MathJobsRankings.exe` (or `python mathjobs_app.py`)
-3. Select both required files
-4. (Optional) Select a training folder with historical data
-5. Click "Process Ratings"
-6. Results are saved as `mathjobs ranking YYYY-MM-DD.xlsx`
+3. Select both files
+4. Click "Process Ratings"
+5. Results are saved as `mathjobs ranking YYYY-MM-DD.xlsx` next to `ratings.csv`
 
 ### Using the Command Line
 
 ```bash
 python mathjobs_rankings_new.py --verbose
 python mathjobs_rankings_new.py --ratings my_ratings.csv --applicants my_appl.csv
-python mathjobs_rankings_new.py --training-folder ./training
-python mathjobs_rankings_new.py --no-training  # Skip historical data
-python mathjobs_rankings_new.py --top-k 20   # move the "chance of top K" line
-python mathjobs_rankings_new.py --runs 100   # more resampled runs
-python mathjobs_rankings_new.py --seed 7     # different seed (same data + same seed = same output)
+python mathjobs_rankings_new.py --top 15 --min-ratings 4   # 15 top places, 4 ratings needed
 ```
+
+The same data always gives the same output. A second run on the same day saves `mathjobs ranking YYYY-MM-DD (2).xlsx` instead of overwriting the first.
 
 ## Input Files
 
-**Required (from current MathJobs export):**
+From the current MathJobs export:
 - `ratings.csv` - Faculty ratings of candidates
-- `appl.csv` - Applicant information
-
-**Optional (past searches, for training):**
-
-A `training` folder with one subfolder per past search, each holding an anonymized `ratings.csv`:
-
-```
-training/
-    2022/
-        ratings.csv
-    2024/
-        ratings.csv
-```
-
-Make each file from that search's final MathJobs ratings export:
-
-```bash
-python anonymize_training.py ratings.csv -o training/2026
-```
-
-The anonymized file keeps only the rater's MathJobs ID, a random applicant ID, and the rating. Past searches help the model learn how each rater tends to score, which matters most early in a search, when few ratings are in. Keep training data private; don't commit it.
+- `appl.csv` - Applicant information. Only applicants marked PageUp are ranked.
 
 ## Output
 
-The Excel file contains four sheets:
+The Excel file has four sheets.
 
 ### Ranking Sheet
-| Rank | Candidate | Score | Middle half of runs | Chance of top 15 | # Ratings |
-|------|-----------|-------|---------------------|------------------|-----------|
-| 1 | Smith, Jane | 8.07 | 7.7–8.3 | 96% | 5 |
 
-- **Score**: the candidate's typical committee rating on the 1–10 scale, adjusted for tough and easy raters.
-- **Middle half of runs**: half of the resampled runs gave a score in this range.
-- **Chance of top 15**: how often the candidate ranked in the top 15 over those runs. Green is 75% or more; yellow is 25–74%.
-- **# Ratings**: how many faculty actually rated the candidate. Red means two or fewer, so the score rests mostly on predictions.
+| Rank | Candidate | Score | Mean rating | # Ratings | Ratings |
+|------|-----------|-------|-------------|-----------|---------|
+| 1 | Smith, Jane | 9.39 | 9.00 | 5 | 10, 9, 9, 9, 8 |
+| 2 | Doe, John | 9.31 | 9.00 | 2 | 9, 9 |
+
+- **Score**: the average of the candidate's ratings, each adjusted for how high or low that rater tends to rate. Only differences between scores matter.
+- **Mean rating**: the plain average, as in MathJobs.
+- **# Ratings** and **Ratings**: how many ratings the candidate received, and the ratings themselves. Red means fewer than 3.
+- **Green**: top-20 places, which need at least 3 ratings. A line marks the cutoff; a red count above it means the candidate needs more ratings to compete for a place.
+
+### Not scored Sheet
+PageUp applicants with no ratings yet.
 
 ### How to read Sheet
-A short explanation of the columns, for sharing at a meeting.
-
-### Predictions Sheet
-Full matrix showing actual and predicted ratings for each candidate by each faculty member. Predicted ratings are used to fill gaps where a faculty member didn't rate a candidate.
+A short explanation of the columns for sharing at a meeting, including how precise a score is with 1, 2, 3, ... ratings.
 
 ### Metrics Sheet
-Algorithm accuracy metrics:
-- **RMSE**: Root Mean Square Error (lower = better)
-- **MAE**: Mean Absolute Error (lower = better)
-- **Training Data Years**: Which years of historical data were used (if any)
-- Also lists the number of resampled runs, the top-K line, and the random seed.
+How well the scores predict ratings they didn't see, compared with the plain mean; how much raters disagree and how much their tendencies differ; and the settings used.
 
-## How the Algorithm Works
+## How It Works
 
-### Collaborative Filtering (SVD++)
+Each rating is treated as
 
-Not every faculty member rates every candidate. Rather than just averaging available ratings (which could be biased), we use collaborative filtering:
+    rating = candidate's level + rater's offset + noise
 
-1. Find patterns in the rating matrix (e.g., "Faculty A and B tend to agree")
-2. Use these patterns to predict what Faculty A would have rated Candidate X, even if they didn't
-3. Include predicted ratings when computing averages
+This is the standard additive model for scores from several judges: a linear mixed model with candidates as fixed effects and raters as random effects. A rater's offset is estimated by comparing their ratings with other raters' ratings of the same candidates; an offset based on few ratings is pulled toward zero. The variances are estimated by REML. A candidate's score is their estimated level: the average of their ratings after subtracting each rater's offset.
 
-### Normalization
-
-Faculty members have different rating styles: some rate everyone 8–10, others 4–7. For each rater we estimate their usual rating and their spread from the ratings they actually gave. For raters with only a few ratings, those estimates are pulled toward the committee's overall values. Every rating, actual or predicted, is converted to "points above or below this rater's usual rating." These are averaged across raters and mapped back to the 1–10 scale, so a score reads like an ordinary rating.
-
-### Score Ranges and Chance of Top K
-
-One run gives one ranking, but small changes in who rated whom can reshuffle candidates with few ratings. So we re-score everyone 50 times. Each time we use a random resample of this year's ratings: some ratings drop out and others count twice, as if a slightly different set of people had read the files. The **score** is the median over those runs, the **middle half of runs** is the range holding half of them, and the **chance of top K** is how often the candidate made the top K. A fixed random seed means the same data always gives the same output.
+A score based on one or two ratings can be off by more than a point, so a top place needs a minimum number of ratings. The How to read sheet gives the precision for the current data.
 
 ## Requirements
 
@@ -109,12 +76,12 @@ One run gives one ranking, but small changes in who rated whom can reshuffle can
 
 **For Python scripts:**
 - Python 3.9+
-- pandas, numpy, scikit-surprise, openpyxl
+- pandas, numpy, openpyxl
 - flet (for GUI)
 
 Install with:
 ```bash
-pip install pandas numpy scikit-surprise openpyxl flet
+pip install pandas numpy openpyxl flet
 ```
 
 ## Files
@@ -122,14 +89,13 @@ pip install pandas numpy scikit-surprise openpyxl flet
 - `mathjobs_rankings_new.py` - Core processing logic
 - `mathjobs_app.py` - Desktop GUI
 - `build_exe.bat` - Build Windows executable
-- `anonymize_training.py` - Makes anonymized training files from past searches
 
 ## Building the Executable
 
 ```bash
 # On Windows, double-click build_exe.bat
 # Or run manually:
-pip install pyinstaller flet pandas numpy scikit-surprise openpyxl
+pip install pyinstaller flet pandas numpy openpyxl
 python -m PyInstaller --onefile --windowed --name "MathJobsRankings" ...
 ```
 

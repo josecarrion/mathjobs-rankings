@@ -2,9 +2,9 @@
 """
 MathJobs Rankings - Desktop Application
 
-A graphical interface for processing MathJobs faculty ratings
-using collaborative filtering to predict missing ratings and
-produce normalized candidate rankings.
+A graphical interface that ranks MathJobs candidates by an adjusted
+mean of the faculty ratings (each rating adjusted for how high or low
+that rater tends to rate).
 
 Usage:
     python mathjobs_app.py
@@ -12,23 +12,18 @@ Usage:
 Or double-click the file on Windows.
 
 Requirements:
-    pip install flet pandas numpy scikit-surprise openpyxl
+    pip install flet pandas numpy openpyxl
 """
 
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import flet as ft
 
 # Import the processing logic from our refactored script
-from mathjobs_rankings_new import (
-    process_mathjobs_data,
-    ProcessingResults,
-    discover_training_data,
-)
+from mathjobs_rankings_new import process_mathjobs_data, format_ratings
 
 
 def main(page: ft.Page):
@@ -44,7 +39,6 @@ def main(page: ft.Page):
     # State
     ratings_file = None
     applicants_file = None
-    training_folder = None
     output_dir = None
 
     # --- UI Components ---
@@ -57,7 +51,7 @@ def main(page: ft.Page):
     )
 
     subtitle = ft.Text(
-        "Process faculty ratings with collaborative filtering",
+        "Rank candidates from faculty ratings",
         size=16,
         color=ft.Colors.GREY_700,
     )
@@ -74,7 +68,6 @@ def main(page: ft.Page):
     # File path displays
     ratings_path_text = ft.Text("No file selected", size=12, color=ft.Colors.GREY_600, width=450)
     applicants_path_text = ft.Text("No file selected", size=12, color=ft.Colors.GREY_600, width=450)
-    training_folder_text = ft.Text("(Optional) No folder selected", size=12, color=ft.Colors.GREY_500, width=450)
 
     def on_ratings_picked(e: ft.FilePickerResultEvent, text_ref):
         nonlocal ratings_file, output_dir
@@ -95,30 +88,9 @@ def main(page: ft.Page):
             update_run_button()
         page.update()
 
-    def on_training_folder_picked(e: ft.FilePickerResultEvent, text_ref):
-        nonlocal training_folder
-        if e.path:
-            training_folder = e.path
-            # Check what years are available
-            datasets = discover_training_data(Path(training_folder))
-            if datasets:
-                years = [d.year for d in datasets]
-                text_ref.value = f"{training_folder} ({len(datasets)} years: {', '.join(years)})"
-            else:
-                text_ref.value = f"{training_folder} (no valid data found)"
-            text_ref.color = ft.Colors.BLACK
-        page.update()
-
-    # Create file/folder pickers
+    # Create file pickers
     ratings_picker = create_file_picker(on_ratings_picked, ratings_path_text)
     applicants_picker = create_file_picker(on_applicants_picked, applicants_path_text)
-
-    # Folder picker for training data
-    def handle_folder_result(e: ft.FilePickerResultEvent):
-        on_training_folder_picked(e, training_folder_text)
-
-    training_folder_picker = ft.FilePicker(on_result=handle_folder_result)
-    page.overlay.append(training_folder_picker)
 
     def update_run_button():
         run_button.disabled = not (ratings_file and applicants_file)
@@ -141,15 +113,6 @@ def main(page: ft.Page):
         "Select appl.csv",
         icon=ft.Icons.FOLDER_OPEN,
         on_click=pick_csv(applicants_picker),
-        width=200,
-    )
-
-    training_folder_button = ft.OutlinedButton(
-        "Select training folder",
-        icon=ft.Icons.FOLDER,
-        on_click=lambda _: training_folder_picker.get_directory_path(
-            dialog_title="Select Training Data Folder"
-        ),
         width=200,
     )
 
@@ -176,7 +139,7 @@ def main(page: ft.Page):
 
     def process_ratings():
         """Run the processing and update the UI."""
-        nonlocal ratings_file, applicants_file, training_folder, output_dir
+        nonlocal ratings_file, applicants_file, output_dir
 
         if not ratings_file or not applicants_file:
             return
@@ -192,18 +155,16 @@ def main(page: ft.Page):
 
         try:
             # Process
-            status_text.value = "Training collaborative filtering model (this may take a moment)..."
+            status_text.value = "Fitting the model..."
             page.update()
-
-            training_f = Path(training_folder) if training_folder else None
 
             results = process_mathjobs_data(
                 ratings_path=Path(ratings_file),
                 applicants_path=Path(applicants_file),
-                training_folder=training_f,
                 output_dir=Path(output_dir),
                 verbose=False
             )
+            top, k = results.top_n, results.min_ratings
 
             # Show results
             progress_bar.visible = False
@@ -219,7 +180,7 @@ def main(page: ft.Page):
                     content=ft.Row([
                         ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.GREEN_700),
                         ft.Text(
-                            f"Processed {len(results.candidates)} candidates",
+                            f"Ranked {len(results.candidates)} candidates",
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.GREEN_900,
                         ),
@@ -227,55 +188,71 @@ def main(page: ft.Page):
                 )
             )
 
-            # Training data info
-            if results.training_years:
+            # Warnings
+            warnings = []
+            if "not applied" in results.pageup_filter:
+                warnings.append(f"PageUp filter {results.pageup_filter}")
+            if not results.fit.converged:
+                warnings.append("the model fit did not converge; treat the scores with caution")
+            if not results.fit.adjusted:
+                warnings.append("no candidate has two ratings yet, so scores are plain means (no rater adjustment)")
+            for w in warnings:
+                results_rows.append(ft.Text(f"Warning: {w}", size=12, color=ft.Colors.ORANGE_700))
+
+            # Accuracy
+            m = results.algorithm_metrics
+            if m:
                 results_rows.append(
                     ft.Text(
-                        f"Training data: {', '.join(results.training_years)}",
+                        f"Typical error predicting a hidden rating: {m['mae']:.2f} (plain mean: {m['mean_mae']:.2f})",
                         size=12,
                         color=ft.Colors.GREY_600,
                     )
                 )
 
-            # Algorithm metrics
+            results_rows.append(ft.Divider())
+            results_rows.append(ft.Text("Top of the ranking:", weight=ft.FontWeight.BOLD, size=16))
             results_rows.append(
-                ft.Text(
-                    f"Model accuracy: RMSE={results.algorithm_metrics['rmse']:.3f}, MAE={results.algorithm_metrics['mae']:.3f}",
-                    size=12,
-                    color=ft.Colors.GREY_600,
-                )
+                ft.Row([
+                    ft.Text("", width=35),
+                    ft.Text("", width=30),
+                    ft.Text("", width=280),
+                    ft.Text("Score", width=55, color=ft.Colors.GREY_600),
+                    ft.Text("Mean", width=55, color=ft.Colors.GREY_600),
+                    ft.Text("Ratings", color=ft.Colors.GREY_600),
+                ])
             )
 
-            results_rows.append(ft.Divider())
-            results_rows.append(ft.Text("Top Candidates:", weight=ft.FontWeight.BOLD, size=16))
-
-            # Top 10 candidates
-            for i, candidate in enumerate(results.candidates[:10], start=1):
-                warning = " *" if candidate.num_ratings <= 2 else ""
+            # Rows down to the last top place or candidate needing reads
+            marked = [i for i, c in enumerate(results.candidates) if c.top_place or c.reads_needed]
+            last = max(marked + [min(top, len(results.candidates)) - 1])
+            for i, c in enumerate(results.candidates[:last + 1], start=1):
+                mark = "#" if c.top_place else (f"+{c.reads_needed}" if c.reads_needed else "")
                 results_rows.append(
                     ft.Row([
-                        ft.Text(f"{i}.", width=30, weight=ft.FontWeight.BOLD),
-                        ft.Text(candidate.name, width=300),
-                        ft.Text(f"{candidate.avg_rating:.2f}", width=50),
-                        ft.Text(f"({candidate.num_ratings} ratings){warning}", color=ft.Colors.GREY_600),
+                        ft.Text(f"{i}.", width=35, weight=ft.FontWeight.BOLD),
+                        ft.Text(mark, width=30, color=ft.Colors.GREEN_800 if c.top_place else ft.Colors.ORANGE_700),
+                        ft.Text(c.name, width=280),
+                        ft.Text(f"{c.score:.2f}", width=55),
+                        ft.Text(f"{c.mean_rating:.2f}", width=55),
+                        ft.Text(format_ratings(c.ratings), color=ft.Colors.GREY_600),
                     ])
                 )
 
-            if len(results.candidates) > 10:
-                results_rows.append(
-                    ft.Text(
-                        f"... and {len(results.candidates) - 10} more (see Excel file)",
-                        size=12,
-                        color=ft.Colors.GREY_600,
-                        italic=True,
-                    )
-                )
+            needing = [c for c in results.candidates if c.reads_needed]
+            summary = [
+                f"{len(needing)} candidates with fewer than {k} ratings score above the top-{top} line "
+                f"({sum(c.reads_needed for c in needing)} reads in all)",
+            ]
+            if results.not_scored:
+                summary.append(f"{len(results.not_scored)} PageUp applicants not rated yet (see the 'Not scored' sheet)")
+            for line in summary:
+                results_rows.append(ft.Text(line, size=12, color=ft.Colors.GREY_600, italic=True))
 
             results_rows.append(ft.Divider())
 
             # Output file
-            date_str = time.strftime("%Y-%m-%d")
-            excel_name = f"mathjobs ranking {date_str}.xlsx"
+            excel_name = results.output_path.name
             results_rows.append(ft.Text("Output file:", weight=ft.FontWeight.BOLD))
             results_rows.append(ft.Text(f"  {excel_name}", size=12))
 
@@ -339,23 +316,15 @@ def main(page: ft.Page):
             ft.Text("How to use:", weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
             ft.Text(
                 "1. Export ratings.csv and appl.csv from MathJobs\n"
-                "2. Select both required files above\n"
-                "3. (Optional) Select folder with historical data for better predictions\n"
-                "4. Click 'Process Ratings' to generate rankings\n"
-                "5. Results are saved as an Excel file",
+                "2. Select both files above\n"
+                "3. Click 'Process Ratings' to generate rankings\n"
+                "4. Results are saved as an Excel file (see its 'How to read' sheet)",
                 size=13,
                 color=ft.Colors.BLUE_800,
             ),
             ft.Container(height=5),
             ft.Text(
-                "Training folder structure: training/2020/, training/2021/, etc.\n"
-                "Each year folder should contain a ratings.csv made by anonymize_training.py",
-                size=11,
-                color=ft.Colors.BLUE_600,
-            ),
-            ft.Container(height=5),
-            ft.Text(
-                "* = two or fewer actual ratings (the score rests mostly on predictions)",
+                "# = holds a top-20 place (needs at least 3 ratings); +n = needs n more reads to compete for one",
                 size=11,
                 color=ft.Colors.ORANGE_700,
             ),
@@ -377,11 +346,7 @@ def main(page: ft.Page):
 
             ft.Container(height=15),
 
-            # Optional training folder section
-            ft.Text("Training Data (Optional - improves predictions):", weight=ft.FontWeight.BOLD, size=14, color=ft.Colors.GREY_700),
-            ft.Row([training_folder_button, training_folder_text], spacing=15),
-
-            ft.Container(height=20),
+            ft.Container(height=5),
 
             # Run button and status
             ft.Row([
