@@ -38,28 +38,29 @@ python mathjobs_rankings_new.py --seed 7     # different seed (same data + same 
 - `ratings.csv` - Faculty ratings of candidates
 - `appl.csv` - Applicant information
 
-**Optional (historical data for training):**
+**Optional (past searches, for training):**
 
-A `training` folder containing year subfolders, each with `ratings.csv` and `appl.csv`:
+A `training` folder with one subfolder per past search, each holding an anonymized `ratings.csv`:
 
 ```
 training/
-    2020/
-        ratings.csv
-        appl.csv
-    2021/
-        ratings.csv
-        appl.csv
     2022/
         ratings.csv
-        appl.csv
+    2024/
+        ratings.csv
 ```
 
-The historical data improves prediction accuracy by giving the algorithm more patterns to learn from. Each year's data is automatically discovered and combined.
+Make each file from that search's final MathJobs ratings export:
+
+```bash
+python anonymize_training.py ratings.csv -o training/2026
+```
+
+The anonymized file keeps only the rater's MathJobs ID, a random applicant ID, and the rating. Past searches help the model learn how each rater tends to score, which matters most early in a search, when few ratings are in. Keep training data private; don't commit it.
 
 ## Output
 
-The Excel file contains three sheets:
+The Excel file contains four sheets:
 
 ### Ranking Sheet
 | Rank | Candidate | Score | Middle half of runs | Chance of top 15 | # Ratings |
@@ -121,6 +122,7 @@ pip install pandas numpy scikit-surprise openpyxl flet
 - `mathjobs_rankings_new.py` - Core processing logic
 - `mathjobs_app.py` - Desktop GUI
 - `build_exe.bat` - Build Windows executable
+- `anonymize_training.py` - Makes anonymized training files from past searches
 
 ## Building the Executable
 

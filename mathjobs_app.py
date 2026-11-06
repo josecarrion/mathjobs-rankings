@@ -349,7 +349,7 @@ def main(page: ft.Page):
             ft.Container(height=5),
             ft.Text(
                 "Training folder structure: training/2020/, training/2021/, etc.\n"
-                "Each year folder should contain ratings.csv and appl.csv",
+                "Each year folder should contain a ratings.csv made by anonymize_training.py",
                 size=11,
                 color=ft.Colors.BLUE_600,
             ),

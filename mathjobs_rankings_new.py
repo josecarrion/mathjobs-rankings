@@ -16,12 +16,12 @@ Input files (from MathJobs export):
 - ratings.csv: Faculty ratings of candidates
 - appl.csv: Applicant information (filtered to PageUp candidates)
 
-Optional training data (improves predictions):
-- A folder containing year subfolders, each with ratings.csv and appl.csv:
+Optional training data (helps most early in a search, when few ratings are in):
+- A folder of year subfolders, each with an anonymized ratings.csv written by
+  anonymize_training.py:
   training/
-    2020/ratings.csv, appl.csv
-    2021/ratings.csv, appl.csv
-    2022/ratings.csv, appl.csv
+    2022/ratings.csv
+    2024/ratings.csv
 
 Output:
 - mathjobs ranking YYYY-MM-DD.xlsx
@@ -100,8 +100,12 @@ class TrainingDataset:
     """A single year's training data."""
     year: str
     ratings_path: Path
-    applicants_path: Path
+    applicants_path: Optional[Path] = None  # not used; kept for compatibility
     num_ratings: int = 0
+
+
+# Columns of an anonymized training file (written by anonymize_training.py)
+TRAINING_COLUMNS = ["FacultyUid", "ApplicantId", "Rating"]
 
 
 # =============================================================================
@@ -195,14 +199,12 @@ def discover_training_data(training_folder: Path) -> list[TrainingDataset]:
     """
     Discover training data from a folder with year subfolders.
 
-    Expected structure:
+    Expected structure (each ratings.csv written by anonymize_training.py):
         training_folder/
-            2020/
+            2022/
                 ratings.csv
-                appl.csv
-            2021/
+            2024/
                 ratings.csv
-                appl.csv
             ...
 
     Args:
@@ -225,15 +227,8 @@ def discover_training_data(training_folder: Path) -> list[TrainingDataset]:
             continue
 
         ratings_path = subfolder / "ratings.csv"
-        appl_path = subfolder / "appl.csv"
-
-        # Check if both files exist
-        if ratings_path.exists() and appl_path.exists():
-            datasets.append(TrainingDataset(
-                year=subfolder.name,
-                ratings_path=ratings_path,
-                applicants_path=appl_path
-            ))
+        if ratings_path.exists():
+            datasets.append(TrainingDataset(year=subfolder.name, ratings_path=ratings_path))
 
     return datasets
 
@@ -243,7 +238,11 @@ def load_training_data(
     verbose: bool = False
 ) -> tuple[pd.DataFrame, list[str]]:
     """
-    Load and combine multiple years of training data.
+    Load and combine multiple years of anonymized training data.
+
+    Each year's applicants get IDs prefixed with the folder name, so they can't
+    collide with another year's or with this year's MathJobs Uids. A year that
+    can't be read stops the run with an error rather than being skipped.
 
     Args:
         datasets: List of TrainingDataset objects
@@ -259,29 +258,31 @@ def load_training_data(
     years_loaded = []
 
     for dataset in datasets:
-        try:
-            # Load ratings (with relaxed filtering for historical data)
-            ratings_df = load_ratings(dataset.ratings_path, min_ratings=0)
-            applicants_df = load_applicants(dataset.applicants_path, pageup_only=False)
+        df = pd.read_csv(dataset.ratings_path)
+        missing = [c for c in TRAINING_COLUMNS if c not in df.columns]
+        if missing:
+            hint = ""
+            if {"Uid", "LastName"} <= set(df.columns):
+                hint = " This looks like a raw MathJobs export; run anonymize_training.py on it first."
+            raise ValueError(
+                f"Training file {dataset.ratings_path} is missing columns {missing}.{hint}"
+            )
 
-            # Get candidate names
-            candidates = [name.strip() for name in applicants_df["Name"].values.tolist()]
+        df = df.dropna(subset=TRAINING_COLUMNS)
+        ratings_for_surprise = pd.DataFrame({
+            "FacultyUid": df["FacultyUid"].astype(int),
+            "Uid": dataset.year + ":" + df["ApplicantId"].astype(str),
+            "Rating": df["Rating"].astype(float),
+        })
+        if ratings_for_surprise.empty:
+            raise ValueError(f"Training file {dataset.ratings_path} has no ratings.")
 
-            # Prepare for Surprise
-            ratings_for_surprise, _, _ = prepare_ratings_for_surprise(ratings_df, candidates)
+        all_ratings.append(ratings_for_surprise)
+        dataset.num_ratings = len(ratings_for_surprise)
+        years_loaded.append(dataset.year)
 
-            if len(ratings_for_surprise) > 0:
-                all_ratings.append(ratings_for_surprise)
-                dataset.num_ratings = len(ratings_for_surprise)
-                years_loaded.append(dataset.year)
-
-                if verbose:
-                    print(f"  Loaded {dataset.year}: {len(ratings_for_surprise)} ratings")
-
-        except Exception as e:
-            if verbose:
-                print(f"  Warning: Could not load {dataset.year}: {e}")
-            continue
+        if verbose:
+            print(f"  Loaded {dataset.year}: {len(ratings_for_surprise)} ratings")
 
     if all_ratings:
         combined = pd.concat(all_ratings, axis=0, ignore_index=True)
@@ -942,10 +943,10 @@ Examples:
     python mathjobs_rankings_new.py --training-folder ./training
     python mathjobs_rankings_new.py --no-training
 
-Training folder structure:
+Training folder structure (each file written by anonymize_training.py):
     training/
-        2020/ratings.csv, appl.csv
-        2021/ratings.csv, appl.csv
+        2022/ratings.csv
+        2024/ratings.csv
         ...
         """
     )
@@ -1031,6 +1032,8 @@ Training folder structure:
         print("\n" + "=" * 60)
         if results.training_years:
             print(f"Training data: {', '.join(results.training_years)}")
+        else:
+            print("Training data: none (this year's ratings only)")
         print(f"Model accuracy: RMSE={results.algorithm_metrics['rmse']:.3f}, MAE={results.algorithm_metrics['mae']:.3f}")
         print("=" * 60)
 

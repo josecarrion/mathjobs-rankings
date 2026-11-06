@@ -1,127 +1,105 @@
 #!/usr/bin/env python3
 """
-Anonymize MathJobs training data for sharing.
+Turn a MathJobs ratings export into an anonymized training file.
 
-QUICK START (PowerShell, from the repo folder):
------------
-    # After a search is complete, run:
-    pip install pandas   # if not already installed
-    python anonymize_training.py appl.csv ratings.csv -o training/2024/
+After a search is over, export ratings.csv from MathJobs and run, from the
+folder that contains this script:
 
-DETAILED INSTRUCTIONS:
----------------------
-1. Open PowerShell
-2. Go to the folder that contains this script:
-       cd path/to/mathjobs-rankings
-3. Make sure pandas is installed:
-       pip install pandas
-4. Run the script:
-       python anonymize_training.py appl.csv ratings.csv -o training/2024/
+    python anonymize_training.py ratings.csv -o training/2026
 
-   Replace "2024" with the current year's folder name.
+Several exports from the same year (for example, two positions) go into one
+file:
 
-WHAT IT DOES:
-    - Replaces candidate names/emails/URLs with anonymous IDs (Applicant_0001, etc.)
-    - Keeps faculty names (needed for collaborative filtering)
-    - Keeps ratings (the core training data)
-    - Removes comments, research areas, organizations (potentially identifying)
+    python anonymize_training.py pott_ratings.csv instr_ratings.csv -o training/2024
 
-OUTPUT FILES (in the specified output folder):
-    - appl_anon.csv: Anonymized applicant data
-    - ratings_anon.csv: Anonymized ratings data
+The output, training/<year>/ratings.csv, has three columns and nothing else:
+
+    FacultyUid   the rater's MathJobs ID (used to learn each rater's habits)
+    ApplicantId  a random ID (A0001, A0002, ...) standing in for the applicant
+    Rating       the score
+
+Applicant names, emails, and comments, faculty names, and every other column
+are dropped. Every rated applicant gets an ID, whether or not they appear in
+appl.csv. IDs are assigned in random order, so they don't follow the
+alphabetical order of the export.
+
+Keep training data out of the repository. .gitignore blocks training/ and
+*.csv, but the files belong in a private location.
+
+Requires pandas and numpy.
 """
 
 import argparse
-import pandas as pd
+import sys
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 
-def anonymize_training_data(appl_path: str, ratings_path: str, output_dir: str):
+
+REQUIRED = ["Uid", "FacultyUid", "Rating"]
+
+
+def anonymize_training_data(ratings_paths: list, output_dir: str, force: bool = False) -> pd.DataFrame:
     """
-    Anonymize training data for sharing.
-
-    Keeps:
-    - Applicant Uid (mapped to anonymous ID)
-    - Faculty names/IDs (raters - needed for collaborative filtering)
-    - Ratings (the core training signal)
-    - Job type (POTT, INST)
-
-    Removes:
-    - Candidate names, emails, URLs
-    - Comments (subjective, potentially embarrassing)
-    - Research areas (potentially identifying)
-    - Organization, DegreeCountry (potentially identifying)
+    Read one or more MathJobs ratings exports and write an anonymized
+    training/<year>/ratings.csv with columns FacultyUid, ApplicantId, Rating.
     """
-    # Read input files
-    appl_df = pd.read_csv(appl_path)
-    ratings_df = pd.read_csv(ratings_path)
+    frames = []
+    for path in ratings_paths:
+        df = pd.read_csv(path)
+        missing = [c for c in REQUIRED if c not in df.columns]
+        if missing:
+            raise ValueError(f"{path} is missing columns {missing}; expected a MathJobs ratings export.")
+        frames.append(df[REQUIRED])
 
-    # Create anonymous applicant ID mapping
-    unique_uids = appl_df['Uid'].unique()
-    uid_map = {uid: f"Applicant_{i:04d}" for i, uid in enumerate(unique_uids, 1)}
+    df = pd.concat(frames, ignore_index=True).dropna(subset=REQUIRED)
+    # One rating per rater and applicant (someone rated in two exports counts once)
+    df = df.groupby(["FacultyUid", "Uid"], as_index=False)["Rating"].mean()
 
-    print(f"Anonymizing {len(unique_uids)} applicants...")
+    uids = df["Uid"].unique()
+    order = np.random.default_rng().permutation(len(uids))
+    id_map = {uid: f"A{i + 1:04d}" for uid, i in zip(uids, order)}
 
-    # Anonymize appl.csv - keep only what's needed for training
-    anon_appl_columns = {
-        'AnonId': appl_df['Uid'].map(uid_map),
-        'AppliedFor': appl_df['AppliedFor'],
-        'MyRating': appl_df['MyRating'],
-        'Avg': appl_df['Avg'],
-        'Ratings': appl_df['Ratings'],
-    }
-    anon_appl = pd.DataFrame(anon_appl_columns)
+    out = pd.DataFrame({
+        "FacultyUid": df["FacultyUid"].astype(int),
+        "ApplicantId": df["Uid"].map(id_map),
+        "Rating": df["Rating"].astype(float),
+    }).sort_values(["ApplicantId", "FacultyUid"])
 
-    # Anonymize ratings.csv - keep faculty info and ratings
-    anon_ratings_columns = {
-        'AnonId': ratings_df['Uid'].map(uid_map),
-        'JobTag': ratings_df['JobTag'],
-        'FacultyUid': ratings_df['FacultyUid'],
-        'Faculty': ratings_df['Faculty'],
-        'Rating': ratings_df['Rating'],
-    }
-    anon_ratings = pd.DataFrame(anon_ratings_columns)
+    out_dir = Path(output_dir)
+    out_path = out_dir / "ratings.csv"
+    if out_path.exists() and not force:
+        raise FileExistsError(f"{out_path} already exists; use --force to replace it.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out.to_csv(out_path, index=False)
 
-    # Create output directory if needed
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Save anonymized files
-    appl_out = output_path / 'appl_anon.csv'
-    ratings_out = output_path / 'ratings_anon.csv'
-
-    anon_appl.to_csv(appl_out, index=False)
-    anon_ratings.to_csv(ratings_out, index=False)
-
-    print(f"Saved: {appl_out}")
-    print(f"Saved: {ratings_out}")
-    print(f"\nAnonymized {len(anon_appl)} applicants, {len(anon_ratings)} ratings.")
-
-    return anon_appl, anon_ratings
+    print(f"Saved {out_path}: {len(out)} ratings of {len(uids)} applicants "
+          f"by {out['FacultyUid'].nunique()} raters.")
+    return out
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Anonymize MathJobs training data for sharing.',
+        description="Turn MathJobs ratings exports into an anonymized training file.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-EXAMPLE:
-    python anonymize_training.py appl.csv ratings.csv --output training/2024/
-
-This will create:
-    training/2024/appl_anon.csv
-    training/2024/ratings_anon.csv
-"""
+EXAMPLES:
+    python anonymize_training.py ratings.csv -o training/2026
+    python anonymize_training.py pott_ratings.csv instr_ratings.csv -o training/2024
+""",
     )
-    parser.add_argument('appl_csv', help='Path to appl.csv (applicant data)')
-    parser.add_argument('ratings_csv', help='Path to ratings.csv (faculty ratings)')
-    parser.add_argument('--output', '-o', default='.',
-                        help='Output directory (default: current directory)')
-
+    parser.add_argument("ratings_csv", nargs="+", help="MathJobs ratings export(s) from one year")
+    parser.add_argument("--output", "-o", required=True, help="Output folder, e.g. training/2026")
+    parser.add_argument("--force", action="store_true", help="Replace an existing ratings.csv")
     args = parser.parse_args()
 
-    anonymize_training_data(args.appl_csv, args.ratings_csv, args.output)
+    try:
+        anonymize_training_data(args.ratings_csv, args.output, force=args.force)
+    except (ValueError, FileExistsError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

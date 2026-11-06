@@ -141,3 +141,5 @@ venv/
 # Rating data: never commit
 training/
 *.xls
+# Built apps (downloaded or local builds)
+*.exe
