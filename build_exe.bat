@@ -3,7 +3,8 @@ REM Build script for MathJobs Rankings App
 REM Run this on Windows to create the standalone executable
 
 echo Installing build dependencies...
-pip install pyinstaller "flet==1.1.2" "flet-desktop==1.1.2" pandas numpy openpyxl
+pip install pyinstaller "flet==1.1.2" "flet-cli==1.1.2" "flet-desktop==1.1.2" pandas numpy openpyxl
+python tools\patch_flet_pack.py
 
 echo.
 echo Building executable with flet pack...
