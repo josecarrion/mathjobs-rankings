@@ -12,9 +12,10 @@ Usage:
 Or double-click the file on Windows.
 
 Requirements:
-    pip install flet pandas numpy openpyxl
+    pip install "flet==1.1.2" pandas numpy openpyxl
 """
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -56,63 +57,59 @@ def main(page: ft.Page):
         color=ft.Colors.GREY_700,
     )
 
-    # File selection components
-    def create_file_picker(on_result, text_ref):
-        def handle_result(e: ft.FilePickerResultEvent):
-            on_result(e, text_ref)
-
-        picker = ft.FilePicker(on_result=handle_result)
-        page.overlay.append(picker)
-        return picker
+    # File picker (a service in Flet 1.x: it registers itself when created;
+    # keep the reference so it stays registered)
+    file_picker = ft.FilePicker()
 
     # File path displays
     ratings_path_text = ft.Text("No file selected", size=12, color=ft.Colors.GREY_600, width=450)
     applicants_path_text = ft.Text("No file selected", size=12, color=ft.Colors.GREY_600, width=450)
 
-    def on_ratings_picked(e: ft.FilePickerResultEvent, text_ref):
+    async def pick_csv(title: str):
+        """Open the file dialog for a CSV file; return its path, or None if cancelled."""
+        files = await file_picker.pick_files(
+            dialog_title=title,
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["csv"],
+        )
+        return files[0].path if files and files[0].path else None
+
+    async def pick_ratings(_):
         nonlocal ratings_file, output_dir
-        if e.files and len(e.files) > 0:
-            ratings_file = e.files[0].path
-            output_dir = str(Path(ratings_file).parent)
-            text_ref.value = ratings_file
-            text_ref.color = ft.Colors.BLACK
+        path = await pick_csv("Select ratings.csv")
+        if path:
+            ratings_file = path
+            output_dir = str(Path(path).parent)
+            ratings_path_text.value = path
+            ratings_path_text.color = ft.Colors.BLACK
             update_run_button()
-        page.update()
+            page.update()
 
-    def on_applicants_picked(e: ft.FilePickerResultEvent, text_ref):
+    async def pick_applicants(_):
         nonlocal applicants_file
-        if e.files and len(e.files) > 0:
-            applicants_file = e.files[0].path
-            text_ref.value = applicants_file
-            text_ref.color = ft.Colors.BLACK
+        path = await pick_csv("Select appl.csv")
+        if path:
+            applicants_file = path
+            applicants_path_text.value = path
+            applicants_path_text.color = ft.Colors.BLACK
             update_run_button()
-        page.update()
-
-    # Create file pickers
-    ratings_picker = create_file_picker(on_ratings_picked, ratings_path_text)
-    applicants_picker = create_file_picker(on_applicants_picked, applicants_path_text)
+            page.update()
 
     def update_run_button():
         run_button.disabled = not (ratings_file and applicants_file)
 
     # File selection buttons
-    def pick_csv(picker):
-        return lambda _: picker.pick_files(
-            allowed_extensions=["csv"],
-            dialog_title="Select CSV File",
-        )
-
-    ratings_button = ft.ElevatedButton(
-        "Select ratings.csv",
+    ratings_button = ft.Button(
+        content="Select ratings.csv",
         icon=ft.Icons.FOLDER_OPEN,
-        on_click=pick_csv(ratings_picker),
+        on_click=pick_ratings,
         width=200,
     )
 
-    applicants_button = ft.ElevatedButton(
-        "Select appl.csv",
+    applicants_button = ft.Button(
+        content="Select appl.csv",
         icon=ft.Icons.FOLDER_OPEN,
-        on_click=pick_csv(applicants_picker),
+        on_click=pick_applicants,
         width=200,
     )
 
@@ -137,8 +134,8 @@ def main(page: ft.Page):
         content=ft.Column([]),
     )
 
-    def process_ratings():
-        """Run the processing and update the UI."""
+    async def process_ratings(_=None):
+        """Run the processing in a background thread and update the UI."""
         nonlocal ratings_file, applicants_file, output_dir
 
         if not ratings_file or not applicants_file:
@@ -158,11 +155,13 @@ def main(page: ft.Page):
             status_text.value = "Fitting the model..."
             page.update()
 
-            results = process_mathjobs_data(
+            # Off the event loop, so the window keeps responding
+            results = await asyncio.to_thread(
+                process_mathjobs_data,
                 ratings_path=Path(ratings_file),
                 applicants_path=Path(applicants_file),
                 output_dir=Path(output_dir),
-                verbose=False
+                verbose=False,
             )
             top, k = results.top_n, results.min_ratings
 
@@ -267,8 +266,8 @@ def main(page: ft.Page):
 
             results_rows.append(ft.Container(height=10))
             results_rows.append(
-                ft.ElevatedButton(
-                    "Open Output Folder",
+                ft.Button(
+                    content="Open Output Folder",
                     icon=ft.Icons.FOLDER,
                     on_click=open_output_folder,
                 )
@@ -290,8 +289,8 @@ def main(page: ft.Page):
             run_button.disabled = False
             page.update()
 
-    run_button = ft.ElevatedButton(
-        "Process Ratings",
+    run_button = ft.Button(
+        content="Process Ratings",
         icon=ft.Icons.PLAY_ARROW,
         disabled=True,
         style=ft.ButtonStyle(
@@ -304,7 +303,7 @@ def main(page: ft.Page):
                 ft.ControlState.DISABLED: ft.Colors.GREY_600,
             },
         ),
-        on_click=lambda _: process_ratings(),
+        on_click=process_ratings,
     )
 
     # Help text
@@ -344,9 +343,7 @@ def main(page: ft.Page):
             ft.Row([ratings_button, ratings_path_text], spacing=15),
             ft.Row([applicants_button, applicants_path_text], spacing=15),
 
-            ft.Container(height=15),
-
-            ft.Container(height=5),
+            ft.Container(height=20),
 
             # Run button and status
             ft.Row([
@@ -371,4 +368,4 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    ft.run(main)

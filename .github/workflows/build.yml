@@ -20,7 +20,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install "flet==0.28.3" pyinstaller pandas numpy openpyxl
+          pip install "flet==1.1.2" "flet-desktop==1.1.2" pyinstaller pandas numpy openpyxl
 
       - name: Build macOS app with flet pack
         run: |
@@ -32,7 +32,7 @@ jobs:
       - name: Create zip
         run: |
           cd dist
-          zip -r MathJobsRankings-macOS.zip MathJobsRankings.app 2>/dev/null || zip -r MathJobsRankings-macOS.zip MathJobsRankings
+          ditto -c -k --sequesterRsrc --keepParent MathJobsRankings.app MathJobsRankings-macOS.zip
           ls -la
 
       - name: Upload macOS artifact
@@ -56,7 +56,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install "flet==0.28.3" pyinstaller pandas numpy openpyxl
+          pip install "flet==1.1.2" "flet-desktop==1.1.2" pyinstaller pandas numpy openpyxl
 
       - name: Build Windows executable with flet pack
         run: |
